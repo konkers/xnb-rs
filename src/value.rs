@@ -1,15 +1,18 @@
-use {
-    super::parse_7bit_int,
-    anyhow::{anyhow, Result},
-    nom::{
-        bytes::complete::{is_not, tag, take},
-        character::complete::{char, one_of},
-        combinator::{map_res, opt, recognize},
-        multi::{count, many0, many1, separated_list1},
-        number::complete::{le_i32, le_u32},
-        sequence::terminated,
-        IResult,
-    },
+use super::parse_7bit_int;
+use anyhow::{anyhow, Result};
+use nom::{
+    bytes::complete::{is_not, tag, take},
+    character::complete::{char, one_of},
+    combinator::{map_res, opt, recognize},
+    multi::{count, many0, many1, separated_list1},
+    number::complete::{le_i32, le_u32},
+    sequence::terminated,
+    IResult,
+};
+use std::{
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+    hash::Hash,
 };
 
 #[derive(Debug)]
@@ -168,6 +171,48 @@ pub enum Value {
     Dict(Dict),
 }
 
+impl TryFrom<Value> for i32 {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if let Value::I32(i32_val) = value {
+            Ok(i32_val)
+        } else {
+            Err(anyhow!("Can't convert {:?} to i32"))
+        }
+    }
+}
+
+impl TryFrom<Value> for String {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if let Value::String(str_val) = value {
+            Ok(str_val)
+        } else {
+            Err(anyhow!("Can't convert {:?} to String"))
+        }
+    }
+}
+
+impl<K: TryFrom<Value> + Eq + Hash, V: TryFrom<Value>> TryFrom<Value> for HashMap<K, V> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if let Value::Dict(dict) = value {
+            let mut map = HashMap::new();
+            for e in dict.entries {
+                let key: K = e.0.try_into().map_err(|_| anyhow!("Can't convert key"))?;
+                let val: V = e.1.try_into().map_err(|_| anyhow!("Can't convert value"))?;
+                map.insert(key, val);
+            }
+            Ok(map)
+        } else {
+            Err(anyhow!("Can't convert {:?} to HashMap"))
+        }
+    }
+}
+
 fn decimal(input: &str) -> IResult<&str, i32> {
     map_res(
         recognize(many1(terminated(one_of("0123456789"), many0(char('_'))))),
@@ -265,5 +310,27 @@ mod tests {
                 })
             )
         );
+    }
+
+    #[test]
+    fn test_value_convert() {
+        let val: i32 = Value::I32(-1).try_into().unwrap();
+        assert_eq!(val, -1);
+
+        let val: String = Value::String("abc".to_string()).try_into().unwrap();
+        assert_eq!(val, "abc".to_string(),);
+
+        let val: HashMap<i32, String> = Value::Dict(Dict {
+            entries: vec![
+                (Value::I32(0), Value::String("zero".to_string())),
+                (Value::I32(1), Value::String("one".to_string())),
+            ],
+        })
+        .try_into()
+        .unwrap();
+        let mut expected = HashMap::new();
+        expected.insert(0, "zero".to_string());
+        expected.insert(1, "one".to_string());
+        assert_eq!(val, expected);
     }
 }
