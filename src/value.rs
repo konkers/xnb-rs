@@ -1,5 +1,6 @@
 use super::parse_7bit_int;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
+use indexmap::IndexMap;
 use nom::{
     bytes::complete::{is_not, tag, take},
     character::complete::{char, one_of},
@@ -13,6 +14,7 @@ use std::{
     collections::HashMap,
     convert::{TryFrom, TryInto},
     hash::Hash,
+    str::FromStr,
 };
 
 #[derive(Debug)]
@@ -32,15 +34,38 @@ impl TypeReaderSpec {
                 Box::new(StringReader::new())
             }
             "Microsoft.Xna.Framework.Content.DictionaryReader" => {
-                let key_reader = new_type_reader(self.subtypes[0].as_str())?;
-                let val_reader = new_type_reader(self.subtypes[1].as_str())?;
+                let key_reader = self.subtypes[0].parse::<TypeReaderSpec>()?.new_reader()?;
+                let val_reader = self.subtypes[1].parse::<TypeReaderSpec>()?.new_reader()?;
 
                 Box::new(DictReader::new(key_reader, val_reader))
+            }
+            "Microsoft.Xna.Framework.Content.ListReader" => {
+                let reader = self.subtypes[0].parse::<TypeReaderSpec>()?.new_reader()?;
+                Box::new(ListReader::new(reader))
             }
             _ => return Err(anyhow!("Unknown reader type {}", &self.name)),
         };
 
         Ok(reader)
+    }
+
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+}
+
+impl FromStr for TypeReaderSpec {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (_, (name, subtypes)) = parse_type(s).map_err(|e| anyhow!("{}", e))?;
+
+        Ok(TypeReaderSpec {
+            name,
+            subtypes,
+            version: 0,
+        })
     }
 }
 
@@ -63,27 +88,6 @@ pub trait TypeReader {
     fn is_basic(&self) -> bool;
 }
 
-pub fn new_type_reader(desc: &str) -> Result<Box<dyn TypeReader>> {
-    let (_rest, (main_type, subtypes)) =
-        parse_type(desc).map_err(|e| anyhow!("Error parsing type desc \"{}\": {}", desc, e))?;
-    let reader: Box<dyn TypeReader> = match main_type.as_str() {
-        "System.Int32" | "Microsoft.Xna.Framework.Content.Int32Reader" => {
-            Box::new(I32Reader::new())
-        }
-        "System.String" | "Microsoft.Xna.Framework.Content.StringReader" => {
-            Box::new(StringReader::new())
-        }
-        "Microsoft.Xna.Framework.Content.DictionaryReader" => {
-            let key_reader = new_type_reader(subtypes[0].as_str())?;
-            let val_reader = new_type_reader(subtypes[1].as_str())?;
-
-            Box::new(DictReader::new(key_reader, val_reader))
-        }
-        _ => return Err(anyhow!("Unknown reader type {}", &main_type)),
-    };
-
-    Ok(reader)
-}
 struct I32Reader {}
 
 impl I32Reader {
@@ -159,6 +163,29 @@ impl TypeReader for DictReader {
     }
 }
 
+struct ListReader {
+    reader: Box<dyn TypeReader>,
+}
+
+impl ListReader {
+    pub fn new(reader: Box<dyn TypeReader>) -> ListReader {
+        ListReader { reader: reader }
+    }
+}
+
+impl TypeReader for ListReader {
+    fn parse<'a>(&self, i: &'a [u8]) -> IResult<&'a [u8], Value> {
+        let (i, num_entries) = le_u32(i)?;
+        let (i, entries) = count(|i| self.reader.parse_embedded(i), num_entries as usize)(i)?;
+
+        Ok((i, Value::List(entries)))
+    }
+
+    fn is_basic(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dict {
     entries: Vec<(Value, Value)>,
@@ -169,6 +196,7 @@ pub enum Value {
     I32(i32),
     String(String),
     Dict(Dict),
+    List(Vec<Value>),
 }
 
 impl TryFrom<Value> for i32 {
@@ -178,7 +206,7 @@ impl TryFrom<Value> for i32 {
         if let Value::I32(i32_val) = value {
             Ok(i32_val)
         } else {
-            Err(anyhow!("Can't convert {:?} to i32"))
+            Err(anyhow!("Can't convert {:?} to i32", value))
         }
     }
 }
@@ -190,7 +218,7 @@ impl TryFrom<Value> for String {
         if let Value::String(str_val) = value {
             Ok(str_val)
         } else {
-            Err(anyhow!("Can't convert {:?} to String"))
+            Err(anyhow!("Can't convert {:?} to String", value))
         }
     }
 }
@@ -208,7 +236,25 @@ impl<K: TryFrom<Value> + Eq + Hash, V: TryFrom<Value>> TryFrom<Value> for HashMa
             }
             Ok(map)
         } else {
-            Err(anyhow!("Can't convert {:?} to HashMap"))
+            Err(anyhow!("Can't convert {:?} to HashMap", value))
+        }
+    }
+}
+
+impl<K: TryFrom<Value> + Eq + Hash, V: TryFrom<Value>> TryFrom<Value> for IndexMap<K, V> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if let Value::Dict(dict) = value {
+            let mut map = IndexMap::new();
+            for e in dict.entries {
+                let key: K = e.0.try_into().map_err(|_| anyhow!("Can't convert key"))?;
+                let val: V = e.1.try_into().map_err(|_| anyhow!("Can't convert value"))?;
+                map.insert(key, val);
+            }
+            Ok(map)
+        } else {
+            Err(anyhow!("Can't convert {:?} to HashMap", value))
         }
     }
 }
@@ -292,7 +338,8 @@ mod tests {
             (&[][..], Value::String("ABC".to_string()))
         );
 
-        let reader = new_type_reader("Microsoft.Xna.Framework.Content.DictionaryReader`2[[System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089],[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]").unwrap();
+        let reader = "Microsoft.Xna.Framework.Content.DictionaryReader`2[[System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089],[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]"
+            .parse::<TypeReaderSpec>().unwrap().new_reader().unwrap();
         assert_eq!(
             reader
                 .parse(&[
@@ -329,6 +376,21 @@ mod tests {
         .try_into()
         .unwrap();
         let mut expected = HashMap::new();
+        expected.insert(0, "zero".to_string());
+        expected.insert(1, "one".to_string());
+        assert_eq!(val, expected);
+
+        // We're not testing ordering here as we assume that IndexMap is
+        // provides its ordering guarcaantee.
+        let val: IndexMap<i32, String> = Value::Dict(Dict {
+            entries: vec![
+                (Value::I32(0), Value::String("zero".to_string())),
+                (Value::I32(1), Value::String("one".to_string())),
+            ],
+        })
+        .try_into()
+        .unwrap();
+        let mut expected = IndexMap::new();
         expected.insert(0, "zero".to_string());
         expected.insert(1, "one".to_string());
         assert_eq!(val, expected);

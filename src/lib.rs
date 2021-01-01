@@ -1,6 +1,7 @@
 use {
     anyhow::{anyhow, Result},
     bitflags::bitflags,
+    log::{debug, log_enabled, trace, Level},
     lzxd::{Lzxd, WindowSize},
     nom::{
         bytes::complete::{tag, take},
@@ -9,6 +10,7 @@ use {
         number::complete::{be_u16, le_u32, u8},
         IResult,
     },
+    pretty_hex::*,
     std::io::{Read, Write},
 };
 
@@ -79,11 +81,20 @@ impl Xnb {
         } else {
             i.into()
         };
+        trace!("decompressed payload:");
+        trace!("{:?}", data.hex_dump());
 
         // Parse and instantiate type readers.
         let (data, reader_specs) = Self::parse_type_readers(&data)
             .map_err(|e| anyhow!("Error decoding type readers: {}", e))?;
         let mut readers = Vec::new();
+
+        if log_enabled!(Level::Debug) {
+            for spec in &reader_specs {
+                debug!("reader: {:?}", spec);
+            }
+        }
+
         for spec in reader_specs {
             let reader = spec.new_reader()?;
             readers.push(reader);
@@ -174,24 +185,12 @@ impl Xnb {
     }
 
     fn parse_type_reader(i: &[u8]) -> IResult<&[u8], value::TypeReaderSpec> {
-        let (i, (name, sub_types)) = map_res(
-            parse_utf8_string,
-            |type_str| -> Result<(String, Vec<String>)> {
-                let (_, res) = value::parse_type(&type_str)
-                    .map_err(|e| anyhow!("Error parsing type string {}: {}", type_str, e))?;
-                Ok(res)
-            },
-        )(i)?;
+        let (i, spec) = map_res(parse_utf8_string, |type_str| {
+            type_str.parse::<value::TypeReaderSpec>()
+        })(i)?;
         let (i, version) = le_u32(i)?;
 
-        Ok((
-            i,
-            value::TypeReaderSpec {
-                name: name.to_string(),
-                subtypes: sub_types,
-                version,
-            },
-        ))
+        Ok((i, spec.with_version(version)))
     }
 }
 
