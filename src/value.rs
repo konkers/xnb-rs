@@ -17,6 +17,9 @@ use std::{
     str::FromStr,
 };
 
+mod map;
+use map::Map;
+
 #[derive(Debug)]
 pub struct TypeReaderSpec {
     pub name: String,
@@ -43,6 +46,7 @@ impl TypeReaderSpec {
                 let reader = self.subtypes[0].parse::<TypeReaderSpec>()?.new_reader()?;
                 Box::new(ListReader::new(reader))
             }
+            "xTile.Pipeline.TideReader, xTile" => Box::new(map::MapReader::new()),
             _ => return Err(anyhow!("Unknown reader type {}", &self.name)),
         };
 
@@ -196,7 +200,14 @@ pub enum Value {
     I32(i32),
     String(String),
     Dict(Dict),
+    Map(Map),
+
+    // Untested.
     List(Vec<Value>),
+
+    // Types w/o readers
+    Bool(bool),
+    F32(f32),
 }
 
 impl TryFrom<Value> for i32 {
