@@ -222,15 +222,16 @@ impl TileOp {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Layer {
-    id: String,
-    visible: bool,
-    desc: String,
-    size: Size,
-    tile_size: Size,
-    props: Vec<Property>,
-    tiles: Vec<Tile>,
+pub struct Layer {
+    pub id: String,
+    pub visible: bool,
+    pub desc: String,
+    pub size: Size,
+    pub tile_size: Size,
+    pub props: Vec<Property>,
+    pub tiles: Vec<Tile>,
 }
+
 impl Layer {
     fn parse(i: &[u8]) -> IResult<&[u8], Layer> {
         let (i, id) = parse_string(i)?;
@@ -308,7 +309,14 @@ impl Layer {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Map {}
+pub struct Map {
+    pub id: String,
+    pub description: String,
+    pub properties: Vec<Property>,
+    pub tile_sheets: Vec<TileSheet>,
+    pub layers: Vec<Layer>,
+}
+
 impl Map {}
 
 pub(super) struct MapReader {}
@@ -337,16 +345,25 @@ impl TypeReader for MapReader {
         let (i, _) = tag("tBIN10")(i)?;
         let (i, id) = parse_string(i)?;
         debug!("id: {}", &id);
-        let (i, desc) = parse_string(i)?;
-        debug!("desc: {}", &desc);
-        let (i, props) = Property::parse_properties(i)?;
-        debug!("props: {:#?}", &props);
-        let (i, sheets) = Self::parse_tile_sheets(i)?;
-        debug!("sheets: {:#?}", &sheets);
+        let (i, description) = parse_string(i)?;
+        debug!("desc: {}", &description);
+        let (i, properties) = Property::parse_properties(i)?;
+        debug!("props: {:#?}", &properties);
+        let (i, tile_sheets) = Self::parse_tile_sheets(i)?;
+        debug!("sheets: {:#?}", &tile_sheets);
         let (i, layers) = Self::parse_layers(i)?;
         debug!("layers: {:#?}", &layers);
 
-        Ok((i, Value::Map(Map {})))
+        Ok((
+            i,
+            Value::Map(Map {
+                id,
+                description,
+                properties,
+                tile_sheets,
+                layers,
+            }),
+        ))
     }
 
     fn is_basic(&self) -> bool {
