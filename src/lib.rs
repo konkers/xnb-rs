@@ -14,7 +14,7 @@ use {
     std::io::{Read, Write},
 };
 
-mod value;
+pub mod value;
 
 pub use value::Value;
 
@@ -241,6 +241,11 @@ mod tests {
         println!("{:#?}", &xnb);
 
         let f = File::open("Bundles.xnb")?;
+        let mut r = BufReader::new(f);
+        let xnb = Xnb::new(&mut r);
+        println!("{:#?}", &xnb);
+
+        let f = File::open("spring_outdoorsTileSheet.xnb")?;
         let mut r = BufReader::new(f);
         let xnb = Xnb::new(&mut r);
         println!("{:#?}", &xnb);

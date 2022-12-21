@@ -12,8 +12,8 @@ use nom::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Size {
-    w: i32,
-    h: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 impl Size {
@@ -27,8 +27,8 @@ impl Size {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Property {
-    key: String,
-    val: Value,
+    pub key: String,
+    pub val: Value,
 }
 
 impl Property {

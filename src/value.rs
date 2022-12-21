@@ -17,8 +17,11 @@ use std::{
     str::FromStr,
 };
 
-mod map;
-use map::Map;
+pub mod map;
+pub mod texture;
+
+pub use map::Map;
+pub use texture::Texture;
 
 #[derive(Debug)]
 pub struct TypeReaderSpec {
@@ -29,7 +32,12 @@ pub struct TypeReaderSpec {
 
 impl TypeReaderSpec {
     pub fn new_reader(&self) -> Result<Box<dyn TypeReader>> {
-        let reader: Box<dyn TypeReader> = match self.name.as_str() {
+        let reader_type = self
+            .name
+            .split(',')
+            .next()
+            .ok_or_else(|| anyhow!("failed to parse type name: {}", self.name))?;
+        let reader: Box<dyn TypeReader> = match reader_type {
             "System.Int32" | "Microsoft.Xna.Framework.Content.Int32Reader" => {
                 Box::new(I32Reader::new())
             }
@@ -46,8 +54,11 @@ impl TypeReaderSpec {
                 let reader = self.subtypes[0].parse::<TypeReaderSpec>()?.new_reader()?;
                 Box::new(ListReader::new(reader))
             }
-            "xTile.Pipeline.TideReader, xTile" => Box::new(map::MapReader::new()),
-            _ => return Err(anyhow!("Unknown reader type {}", &self.name)),
+            "xTile.Pipeline.TideReader" => Box::new(map::MapReader::new()),
+            "Microsoft.Xna.Framework.Content.Texture2DReader" => {
+                Box::new(texture::TextureReader::new())
+            }
+            _ => return Err(anyhow!("Unknown reader type {}", reader_type)),
         };
 
         Ok(reader)
@@ -201,6 +212,7 @@ pub enum Value {
     String(String),
     Dict(Dict),
     Map(Map),
+    Texture(Texture),
 
     // Untested.
     List(Vec<Value>),
