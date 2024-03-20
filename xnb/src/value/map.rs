@@ -7,8 +7,9 @@ use nom::{
     combinator::map_res,
     multi::count,
     number::complete::{le_f32, le_i32, le_u32, u8},
-    IResult,
 };
+
+use crate::{IResult, ReaderContext};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Size {
@@ -340,7 +341,7 @@ impl MapReader {
 }
 
 impl TypeReader for MapReader {
-    fn parse<'a>(&self, i: &'a [u8]) -> IResult<&'a [u8], Value> {
+    fn parse<'a>(&self, _context: &ReaderContext, i: &'a [u8]) -> IResult<&'a [u8], Value> {
         let (i, _len) = le_u32(i)?;
         let (i, _) = tag("tBIN10")(i)?;
         let (i, id) = parse_string(i)?;
