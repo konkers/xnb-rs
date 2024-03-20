@@ -1,7 +1,9 @@
 use super::{TypeReader, Value};
 use anyhow::anyhow;
 use log::debug;
-use nom::{bytes::complete::take, combinator::map_res, number::complete::le_i32, IResult};
+use nom::{bytes::complete::take, combinator::map_res, number::complete::le_i32};
+
+use crate::{IResult, ReaderContext};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Texture {
@@ -19,7 +21,7 @@ impl TextureReader {
 }
 
 impl TypeReader for TextureReader {
-    fn parse<'a>(&self, i: &'a [u8]) -> IResult<&'a [u8], Value> {
+    fn parse<'a>(&self, _context: &ReaderContext, i: &'a [u8]) -> IResult<&'a [u8], Value> {
         let (i, format) = map_res(le_i32, |value| match value {
             0 => Ok(value),
             _ => Err(anyhow!("Can't parse textures of format {value}.")),

@@ -6,17 +6,127 @@ use {
     nom::{
         bytes::complete::{tag, take},
         combinator::{map_res, peek},
+        error::{ContextError, ErrorKind, FromExternalError},
         multi::count,
         number::complete::{be_u16, le_u32, u8},
-        IResult,
     },
     pretty_hex::*,
-    std::io::{Read, Write},
+    std::{
+        cmp::min,
+        convert::TryFrom,
+        io::{Read, Write},
+    },
+    value::TypeReader,
 };
 
 pub mod value;
 
 pub use value::Value;
+
+#[derive(Debug)]
+pub struct ParseError {
+    message: String,
+}
+
+impl ParseError {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl nom::error::ParseError<&[u8]> for ParseError {
+    // on one line, we show the error code and the input that caused it
+    fn from_error_kind(input: &[u8], kind: ErrorKind) -> Self {
+        let len = min(input.len(), 64);
+        let message = format!("{:?}:\t{:x?}\n", kind, &input[..len]);
+        Self { message }
+    }
+
+    // if combining multiple errors, we show them one after the other
+    fn append(input: &[u8], kind: ErrorKind, other: Self) -> Self {
+        let len = min(input.len(), 64);
+        let message = format!("{}{:?}:\t{:x?}\n", other.message, kind, &input[..len]);
+        Self { message }
+    }
+
+    fn from_char(input: &[u8], c: char) -> Self {
+        let len = min(input.len(), 64);
+        let message = format!("'{}':\t{:x?}\n", c, &input[..len]);
+        Self { message }
+    }
+
+    fn or(self, other: Self) -> Self {
+        let message = format!("{}\tOR\n{}\n", self.message, other.message);
+        Self { message }
+    }
+}
+
+impl ContextError<&[u8]> for ParseError {
+    fn add_context(input: &[u8], ctx: &'static str, other: Self) -> Self {
+        let len = min(input.len(), 64);
+        let message = format!("{}\"{}\":\t{:x?}\n", other.message, ctx, &input[..len]);
+        Self { message }
+    }
+}
+
+impl FromExternalError<&[u8], anyhow::Error> for ParseError {
+    fn from_external_error(input: &[u8], kind: ErrorKind, e: anyhow::Error) -> Self {
+        let len = min(input.len(), 64);
+        let message = format!("{}{:?}:\t{:x?}\n", e, kind, &input[..len]);
+        Self { message }
+    }
+}
+
+type IResult<I, T> = nom::IResult<I, T, ParseError>;
+
+pub struct ReaderContext {
+    readers: Vec<Box<dyn TypeReader>>,
+}
+
+impl ReaderContext {
+    fn new() -> Self {
+        Self {
+            readers: Vec::new(),
+        }
+    }
+
+    fn add_reader(&mut self, reader: Box<dyn TypeReader>) {
+        self.readers.push(reader);
+    }
+
+    pub fn parse_value<'a>(&self, input: &'a [u8]) -> IResult<&'a [u8], Value> {
+        let (input, reader_index) = parse_7bit_int(input)?;
+        //.map_err(|e| anyhow!("Error reading main object reader index: {}", e))?;
+        if reader_index == 0 {
+            return Ok((input, Value::Null));
+        }
+        let reader = &self
+            .readers
+            .get((reader_index as usize) - 1)
+            .ok_or_else(|| {
+                nom::Err::Error(ParseError::new(format!(
+                    "Unnown reader index {reader_index}"
+                )))
+            })?;
+        reader.parse(self, input)
+
+        //            .map_err(|e| anyhow!("Error reading main object: {}", e))?;
+    }
+
+    pub fn parse_string<'a>(&self, input: &'a [u8]) -> IResult<&'a [u8], String> {
+        map_res(|i| self.parse_value(i), String::try_from)(input)
+    }
+
+    pub fn parse_into<'a, T: TryFrom<Value>>(&self, input: &'a [u8]) -> IResult<&'a [u8], T>
+    where
+        <T as std::convert::TryFrom<value::Value>>::Error: std::fmt::Debug,
+    {
+        map_res(
+            |i| self.parse_value(i),
+            |val| T::try_from(val).map_err(|e| anyhow!("{e:?}")),
+        )(input)
+    }
+}
 
 #[derive(Debug)]
 pub enum TargetPlatform {
@@ -71,7 +181,7 @@ impl Xnb {
 
     fn parse_xnb(i: &[u8]) -> Result<Xnb> {
         let (i, header) =
-            Self::parse_header(&i).map_err(|e| anyhow!("Error parsing xnb header: {}", e))?;
+            Self::parse_header(i).map_err(|e| anyhow!("Error parsing xnb header: {}", e))?;
 
         // XNB files can be uncompressed or compressed with LZX or LZA.
         // Currently only LZX and uncompressed files are supported.
@@ -87,30 +197,33 @@ impl Xnb {
         // Parse and instantiate type readers.
         let (data, reader_specs) = Self::parse_type_readers(&data)
             .map_err(|e| anyhow!("Error decoding type readers: {}", e))?;
-        let mut readers = Vec::new();
 
         if log_enabled!(Level::Debug) {
-            for spec in &reader_specs {
-                debug!("reader: {:?}", spec);
+            for (i, spec) in reader_specs.iter().enumerate() {
+                debug!("{i}: reader: {:?}", spec);
             }
         }
 
+        let mut context = ReaderContext::new();
         for spec in reader_specs {
             let reader = spec.new_reader()?;
-            readers.push(reader);
+            context.add_reader(reader);
         }
 
         // Number of shared resources.
-        let (data, _) = parse_7bit_int(&data)
+        let (data, _) = parse_7bit_int(data)
             .map_err(|e| anyhow!("Error reading shared resource count: {}", e))?;
 
-        // Main object is tagged with its reader index.
-        let (data, reader_index) = parse_7bit_int(&data)
-            .map_err(|e| anyhow!("Error reading main object reader index: {}", e))?;
-        let reader = &readers[(reader_index as usize) - 1];
-        let (_data, content) = reader
-            .parse(&data)
+        let (_data, content) = context
+            .parse_value(data)
             .map_err(|e| anyhow!("Error reading main object: {}", e))?;
+        // Main object is tagged with its reader index.
+        // let (data, reader_index) = parse_7bit_int(&data)
+        //     .map_err(|e| anyhow!("Error reading main object reader index: {}", e))?;
+        // let reader = &readers[(reader_index as usize) - 1];
+        // let (_data, content) = reader
+        //     .parse(&data)
+        //     .map_err(|e| anyhow!("Error reading main object: {}", e))?;
 
         // Shared resources are not handled at the moment.
 
@@ -147,11 +260,12 @@ impl Xnb {
         let mut i = i;
         let mut decoder = Lzxd::new(WindowSize::KB64);
         let mut decompressed = Vec::new();
+        #[allow(clippy::while_let_loop)]
         loop {
             match Self::parse_compressed_chunk(i) {
                 Ok((rest, chunk)) => {
                     let data = decoder.decompress_next(chunk)?;
-                    decompressed.write(data)?;
+                    decompressed.write_all(data)?;
                     i = rest;
                 }
                 Err(_) => break,
