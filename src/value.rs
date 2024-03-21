@@ -16,6 +16,7 @@ use std::{
     hash::Hash,
     str::FromStr,
 };
+use strum::EnumString;
 
 pub mod map;
 pub mod texture;
@@ -156,8 +157,20 @@ impl TypeReader for ObjectDataReader {
         let (i, name) = context.parse_into(i)?;
         let (i, display_name) = context.parse_into(i)?;
         let (i, description) = context.parse_into(i)?;
-        let (i, ty) = context.parse_into(i)?;
+        let (i, ty) = context.parse_string(i)?;
+        let ty = ty.parse().map_err(|e| {
+            nom::Err::Error(ParseError::new(format!(
+                "Error parsing object type {}: {}",
+                ty, e
+            )))
+        })?;
         let (i, category) = le_i32(i)?;
+        let category = ObjectCategory::from_i32(category).ok_or_else(|| {
+            nom::Err::Error(ParseError::new(format!(
+                "Error parsing object category {}",
+                category
+            )))
+        })?;
         let (i, price) = le_i32(i)?;
         let (i, texture) = context.parse_into(i)?;
         let (i, sprite_index) = le_i32(i)?;
@@ -570,6 +583,66 @@ impl TypeReader for ListReader {
     }
 }
 
+#[derive(Debug, Default, Clone, EnumString, Eq, PartialEq)]
+#[strum(ascii_case_insensitive)]
+pub enum ObjectType {
+    #[default]
+    Unknown,
+    Arch,
+    Asdf,
+    Basic,
+    Cooking,
+    Crafting,
+    Fish,
+    Interactive,
+    Minerals,
+    Quest,
+    Ring,
+    Seeds,
+    Litter,
+}
+
+#[derive(Clone, Default, EnumString, Eq, Debug, FromPrimitive, Hash, PartialEq)]
+pub enum ObjectCategory {
+    #[default]
+    None = 0,
+    Gem = -2,
+    Fish = -4,
+    Egg = -5,
+    Milk = -6,
+    Cooking = -7,
+    Crafting = -8,
+    BigCraftable = -9,
+    Mineral = -12,
+    Metal = -15,
+    Building = -16,
+    SellAtPierres = -17,
+    SellAtPierresAndMarines = -18,
+    Fertilizer = -19,
+    Junk = -20,
+    Bait = -21,
+    Tackle = -22,
+    SellAtFishShop = -23,
+    Furniture = -24,
+    Artisan = -26,
+    Syrup = -27,
+    MonsterLoot = -28,
+    Seed = -74,
+    Vegitable = -75,
+    Fruit = -79,
+    Flower = -80,
+    Green = -81,
+    Hat = -95,
+    Ring = -96,
+    Boots = -97, // unsure
+    Weapon = -98,
+    Tool = -99,
+    Pants = -100, // unsure
+    Unknown102 = -102,
+    Unknown103 = -103,
+    Unknown999 = -999,
+}
+
 #[derive(Clone, Debug, FromPrimitive, PartialEq)]
 pub enum ModificationType {
     Add,
@@ -652,8 +725,8 @@ pub struct ObjectData {
     pub name: String,
     pub display_name: String,
     pub description: String,
-    pub ty: String,
-    pub category: i32,
+    pub ty: ObjectType,
+    pub category: ObjectCategory,
     pub price: i32,
     pub texture: String,
     pub sprite_index: i32,
@@ -784,6 +857,17 @@ impl TryFrom<Value> for Option<BuffAttributesData> {
             Value::BuffAttributesData(val) => Ok(Some(*val)),
             Value::Null => Ok(None),
             _ => Err(anyhow!("Can't convert {:?} to QuantityModifier", value)),
+        }
+    }
+}
+
+impl TryFrom<Value> for ObjectData {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::ObjectData(val) => Ok(*val),
+            _ => Err(anyhow!("Can't convert {:?} to ObjectData", value)),
         }
     }
 }

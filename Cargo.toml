@@ -17,3 +17,4 @@ nom = "6.0.1"
 num-derive = "0.4.2"
 num-traits = "0.2.18"
 pretty-hex = "0.2.1"
+strum = { version = "0.26.2", features = ["derive"] }
