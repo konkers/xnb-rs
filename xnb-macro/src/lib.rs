@@ -31,7 +31,8 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
     // Used in the quasi-quotation below as `#name`.
     let name = &input.ident;
 
-    let xnb_name = get_xnb_name(&input)?;
+    let type_registration = get_type_registration(&input)?;
+    let tagged = is_tagged(&input);
     // Add a bound `T: HeapSize` to every type parameter T.
     let generics = add_trait_bounds(input.generics);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -48,6 +49,11 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
         syn::Data::Union(_) => Vec::new(),
     };
 
+    let (xnb_name, nullable) = match type_registration {
+        TypeRegistartion::NonNullable(name) => (name, false),
+        TypeRegistartion::Nullable(name) => (name, true),
+    };
+
     // Build the output, possibly using quasi-quotation
     Ok(quote! {
         impl #impl_generics xnb::XnbType for #name #ty_generics #where_clause {
@@ -59,6 +65,8 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
                         name: #xnb_name.to_string(),
                         sub_types: vec![],
                         fields: vec![#(#fields),*],
+                        nullable: #nullable,
+                        tagged: #tagged,
                     },
                     std::any::TypeId::of::<Self>())?;
                 Ok(())
@@ -67,18 +75,34 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
     })
 }
 
-fn get_xnb_name(input: &DeriveInput) -> Result<String> {
+fn is_tagged(input: &DeriveInput) -> bool {
+    let tag_found = input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("xnb_untagged"));
+
+    !tag_found
+}
+
+enum TypeRegistartion {
+    NonNullable(String),
+    Nullable(String),
+}
+
+fn get_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     match input.data {
-        syn::Data::Struct(_) => xnb_struct_name(input),
-        syn::Data::Enum(_) => xnb_enum_name(input),
+        syn::Data::Struct(_) => struct_type_registartion(input),
+        syn::Data::Enum(_) => struct_type_registration(input),
         syn::Data::Union(_) => todo!(),
     }
 }
 
-fn xnb_enum_name(input: &DeriveInput) -> Result<String> {
+fn struct_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     let repr_attr = input.attrs.iter().find(|attr| attr.path().is_ident("repr"));
     let Some(repr_attr) = repr_attr else {
-        return Ok("Microsoft.Xna.Framework.Content.StringReader".to_string());
+        return Ok(TypeRegistartion::Nullable(
+            "Microsoft.Xna.Framework.Content.StringReader".to_string(),
+        ));
     };
 
     let repr_value = repr_attr
@@ -86,12 +110,14 @@ fn xnb_enum_name(input: &DeriveInput) -> Result<String> {
         .map_err(|e| error!(e.span(), "expected #[repr()] argument to be an ident: {e}"))?;
 
     match repr_value.to_string().as_str() {
-        "i32" => Ok("Microsoft.Xna.Framework.Content.Int32Reader".to_string()),
+        "i32" => Ok(TypeRegistartion::NonNullable(
+            "Microsoft.Xna.Framework.Content.Int32Reader".to_string(),
+        )),
         val => Err(error!(repr_value.span(), "Unknown type in #[repr({val})]")),
     }
 }
 
-fn xnb_struct_name(input: &DeriveInput) -> Result<String> {
+fn struct_type_registartion(input: &DeriveInput) -> Result<TypeRegistartion> {
     let xnb_name = input
         .attrs
         .iter()
@@ -110,7 +136,7 @@ fn xnb_struct_name(input: &DeriveInput) -> Result<String> {
                 "can't parse argument to `#[xnb_name(\"path\")]`: {e}"
             )
         })
-        .map(|v| v.value())
+        .map(|v| TypeRegistartion::Nullable(v.value()))
 }
 
 fn add_trait_bounds(mut generics: Generics) -> Generics {
@@ -196,6 +222,14 @@ pub fn xnb_type_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 
 #[proc_macro_attribute]
 pub fn xnb_name(
+    _attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn xnb_untagged(
     _attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {

@@ -13,22 +13,38 @@ pub struct TypeSpec {
     pub name: String,
     pub sub_types: Vec<TypeId>,
     pub fields: Vec<(String, TypeId)>,
+    pub nullable: bool,
+    pub tagged: bool,
 }
 
 impl TypeSpec {
-    fn new(name: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
             sub_types: Vec::new(),
             fields: Vec::new(),
+            nullable: true,
+            tagged: true,
         }
     }
 
-    fn new_with_subtypes(name: &str, sub_types: &[TypeId]) -> Self {
+    pub fn new_primitive(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            sub_types: Vec::new(),
+            fields: Vec::new(),
+            nullable: false,
+            tagged: false,
+        }
+    }
+
+    pub fn new_with_subtypes(name: &str, sub_types: &[TypeId]) -> Self {
         Self {
             name: name.into(),
             sub_types: sub_types.into(),
             fields: Vec::new(),
+            nullable: true,
+            tagged: true,
         }
     }
 
@@ -85,7 +101,7 @@ where
 impl XnbType for bool {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new("Microsoft.Xna.Framework.Content.BooleanReader"),
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.BooleanReader"),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -94,9 +110,12 @@ impl XnbType for bool {
 
 impl XnbType for i32 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
-        registry.register_type(TypeSpec::new("System.Int32"), TypeId::of::<Self>())?;
         registry.register_type(
-            TypeSpec::new("Microsoft.Xna.Framework.Content.Int32Reader"),
+            TypeSpec::new_primitive("System.Int32"),
+            TypeId::of::<Self>(),
+        )?;
+        registry.register_type(
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.Int32Reader"),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -105,9 +124,12 @@ impl XnbType for i32 {
 
 impl XnbType for f32 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
-        registry.register_type(TypeSpec::new("System.Single"), TypeId::of::<Self>())?;
         registry.register_type(
-            TypeSpec::new("Microsoft.Xna.Framework.Content.SingleReader"),
+            TypeSpec::new_primitive("System.Single"),
+            TypeId::of::<Self>(),
+        )?;
+        registry.register_type(
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.SingleReader"),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -117,7 +139,7 @@ impl XnbType for f32 {
 impl XnbType for f64 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new("Microsoft.Xna.Framework.Content.DoubleReader"),
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.DoubleReader"),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -148,12 +170,35 @@ impl<T: 'static + XnbType> XnbType for Option<T> {
 impl<T: 'static + XnbType> XnbType for Vec<T> {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         <T as XnbType>::register(registry)?;
+
+        let type_id = TypeId::of::<Self>();
+        let sub_type_id = TypeId::of::<T>();
+        // In order to support fields like int[] we need to register a type with
+        // the name '<TYPE_NAME>[]'.   Since we don't know the inner type name,
+        // we look it up in the registry and register all variants of it that
+        // don't have subtypes.
+        if let Ok(specs) = registry.get(sub_type_id).map(|specs| specs.clone()) {
+            for spec in specs {
+                if spec.sub_types.is_empty() {
+                    registry.register_type(TypeSpec::new(&format!("{}[]", spec.name)), type_id)?;
+                }
+            }
+        }
+
         registry.register_type(
             TypeSpec::new_with_subtypes(
                 "Microsoft.Xna.Framework.Content.ListReader",
-                &[TypeId::of::<T>()],
+                &[sub_type_id],
             ),
-            TypeId::of::<Self>(),
+            type_id,
+        )?;
+
+        registry.register_type(
+            TypeSpec::new_with_subtypes(
+                "Microsoft.Xna.Framework.Content.ArrayReader",
+                &[sub_type_id],
+            ),
+            type_id,
         )
     }
 }

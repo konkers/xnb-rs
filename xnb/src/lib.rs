@@ -5,13 +5,13 @@ use bitflags::bitflags;
 use log::{debug, log_enabled, trace, Level};
 use lzxd::{Lzxd, WindowSize};
 use nom::{
-    bytes::complete::{is_not, tag, take},
+    bytes::complete::{is_not, tag, take, take_while},
     character::complete::{char, one_of},
     combinator::{map_res, opt, peek, recognize},
     error::{ContextError, ErrorKind, FromExternalError},
     multi::{count, many0, separated_list0},
     number::complete::{be_u16, le_u32, u8},
-    sequence::terminated,
+    sequence::{terminated, tuple},
 };
 use pretty_hex::*;
 use serde::de::DeserializeOwned;
@@ -24,12 +24,12 @@ mod de;
 mod xnb_type;
 
 //pub use value::Value;
-pub use xnb_macro::{xnb_name, XnbType};
+pub use xnb_macro::{xnb_name, xnb_untagged, XnbType};
 pub use xnb_type::{TypeRegistry, TypeSpec, XnbType};
 
 pub use anyhow::Error;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TypeReaderSpec {
     pub name: String,
     pub sub_types: Vec<String>,
@@ -282,13 +282,8 @@ fn parse_type_reader(i: &[u8]) -> IResult<&[u8], TypeReaderSpec> {
 fn parse_type(i: &str) -> nom::IResult<&str, (String, Vec<String>)> {
     let (i, name) = is_not("`")(i)?;
     let (i, subtypes) = opt(parse_subtypes)(i)?;
-    let subtypes = if let Some(subtypes) = subtypes {
-        subtypes
-    } else {
-        Vec::new()
-    };
 
-    Ok((i, (name.to_string(), subtypes)))
+    Ok((i, (name.to_string(), subtypes.unwrap_or_default())))
 }
 
 fn decimal(input: &str) -> nom::IResult<&str, i32> {
@@ -298,9 +293,15 @@ fn decimal(input: &str) -> nom::IResult<&str, i32> {
     )(input)
 }
 
+pub fn subtype_field(i: &str) -> nom::IResult<&str, String> {
+    let (i, ident) = recognize(tuple((take_while(|c| !",[]".contains(c)), opt(tag("[]")))))(i)?;
+
+    Ok((i, ident.to_string()))
+}
+
 pub fn parse_subtype(i: &str) -> nom::IResult<&str, String> {
     let (i, _) = tag("[")(i)?;
-    let (i, fields) = separated_list0(tag(","), is_not(",]"))(i)?;
+    let (i, fields) = separated_list0(tag(","), subtype_field)(i)?;
     let (i, _) = tag("]")(i)?;
     Ok((i, fields[0].to_string()))
 }

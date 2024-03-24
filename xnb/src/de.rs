@@ -2,8 +2,9 @@ use std::any::TypeId;
 use std::cmp::min;
 use std::fmt::Display;
 
+
 use log::trace;
-use nom::number::complete::{le_f32, le_f64, le_i32, le_u32};
+use nom::number::complete::{le_f32, le_f64, le_i32, le_u32, le_u8};
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, Visitor};
 
 use crate::TypeReaderSpec;
@@ -93,6 +94,13 @@ impl<'de> Deserializer<'de> {
         Ok(val)
     }
 
+    pub fn read_bool(&mut self) -> Result<bool> {
+        let (data, val) =
+            le_u8::<_, ParseError>(self.input).map_err(|e| error!("error reading bool: {e}"))?;
+        self.input = data;
+        Ok(val != 0)
+    }
+
     pub fn read_u32(&mut self) -> Result<u32> {
         let (data, val) =
             le_u32::<_, ParseError>(self.input).map_err(|e| error!("error reading u32: {e}"))?;
@@ -141,6 +149,17 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn read_and_validate_type(&mut self, type_id: TypeId) -> Result<TypeSpec> {
+        let spec = self
+            .registry
+            .get(self.type_id)
+            .expect("type spec to exist")
+            .iter()
+            .next()
+            .expect("type spec to exist");
+        if !spec.tagged {
+            return Ok(spec.clone());
+        }
+
         let reader_index = self.read_varint()?;
         if reader_index == 0 {
             return err!("encountered null type index on non-nullable type (consider wrapping in `Option<T>`).");
@@ -178,6 +197,7 @@ impl<'de> Deserializer<'de> {
                         let Ok(specs) = self.registry.get(*type_id) else {
                             return false;
                         };
+                        trace!("{specs:?}");
                         acc && specs
                             .iter()
                             .any(|spec| spec.name == *name && spec.sub_types.is_empty())
@@ -278,7 +298,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        trace!("parsing f32 {:x?}", self.peek(8));
         let val = self.read_f32()?;
+        trace!("   -> {val}");
         visitor.visit_f32(val)
     }
 
@@ -352,33 +374,45 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         trace!("deserializing option {:x?}", self.peek(1));
-        match self.input[0] {
-            0 => {
+        let spec = self
+            .registry
+            .get(self.type_id)
+            .expect("type spec to exist")
+            .iter()
+            .next()
+            .expect("type spec to exist");
+        trace!("option spec: {spec:?}");
+        assert!(spec.sub_types.len() == 1);
+
+        let value_type_id = spec.sub_types[0];
+        let value_spec = self
+            .registry
+            .get(value_type_id)
+            .expect("type spec to exist")
+            .iter()
+            .next()
+            .expect("type spec to exist");
+        trace!("value spec: {value_spec:?}");
+
+        // Process the null cases seperatly based on if the type is nullable.
+        if value_spec.nullable {
+            // If the type is nullable, expect it to either be the reader_index 0 (null) or it's value.
+            if self.input[0] == 0 {
+                // Consume the null type byte.
                 self.input = &self.input[1..];
-                visitor.visit_none()
+                return visitor.visit_none();
             }
-            _ => {
-                let spec = self
-                    .registry
-                    .get(self.type_id)
-                    .expect("type spec to exist")
-                    .iter()
-                    .next()
-                    .expect("type spec to exist");
-                assert!(spec.sub_types.len() == 1);
-                trace!("option spec: {spec:?}");
-                self.type_id = spec.sub_types[0];
-                let spec = self
-                    .registry
-                    .get(self.type_id)
-                    .expect("type spec to exist")
-                    .iter()
-                    .next()
-                    .expect("type spec to exist");
-                trace!("value spec: {spec:?}");
-                visitor.visit_some(self)
+        } else {
+            // If the type is not nullable, assume it's using the nullable reader.
+            let is_some = self.read_bool()?;
+            if !is_some {
+                return visitor.visit_none();
             }
         }
+
+        // Once we're in the non-null case, we treat the value the same
+        self.type_id = value_type_id;
+        visitor.visit_some(self)
     }
 
     // In Serde, unit means an anonymous value containing no data.
@@ -622,9 +656,10 @@ impl<'a, 'de: 'a> SeqAccess<'de> for Struct<'a, 'de> {
         }
         self.de.type_id = self.fields[self.cur_entry].1;
         trace!(
-            "deserializing field {}: {}",
+            "deserializing field[{}] {}: {:x?}",
             self.cur_entry,
-            self.fields[self.cur_entry].0
+            self.fields[self.cur_entry].0,
+            self.de.peek(32),
         );
         self.cur_entry += 1;
         seed.deserialize(&mut *self.de).map(Some)
