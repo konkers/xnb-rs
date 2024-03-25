@@ -10,6 +10,7 @@ edition = "2021"
 anyhow = "1.0"
 bitflags = "1.2.1"
 byteorder = "1.3.4"
+env_logger = {version = "0.11.3", optional = true}
 indexmap = { version = "1.6.1", features = ["serde"] }
 log = "0.4.11"
 lzxd = "0.1.0"
@@ -19,8 +20,18 @@ num-traits = "0.2.18"
 pretty-hex = "0.2.1"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_repr = "0.1.18"
+structopt = { version = "0.3.26", optional = true }
 strum = { version = "0.26.2", features = ["derive"] }
 xnb-macro = { version = "0.1.0", path = "../xnb-macro" }
 
 [dev-dependencies]
 env_logger = "0.11.3"
+
+[features]
+default = []
+cli = ["env_logger", "structopt"]
+
+[[bin]]
+name = "xnb-util"
+path = "src/bin/xnb-util.rs"
+required-features = ["cli"]

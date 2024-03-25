@@ -177,7 +177,7 @@ impl<T: 'static + XnbType> XnbType for Vec<T> {
         // the name '<TYPE_NAME>[]'.   Since we don't know the inner type name,
         // we look it up in the registry and register all variants of it that
         // don't have subtypes.
-        if let Ok(specs) = registry.get(sub_type_id).map(|specs| specs.clone()) {
+        if let Ok(specs) = registry.get(sub_type_id).cloned() {
             for spec in specs {
                 if spec.sub_types.is_empty() {
                     registry.register_type(TypeSpec::new(&format!("{}[]", spec.name)), type_id)?;
