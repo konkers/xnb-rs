@@ -1,7 +1,9 @@
+
+
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
 use syn::{
-    parse_macro_input, parse_quote, spanned::Spanned, DataStruct, DeriveInput, GenericParam,
+    parse_macro_input, parse_quote, spanned::Spanned, DataStruct, DeriveInput, Field, GenericParam,
     Generics, Ident, LitStr, PathArguments, Type, TypePath,
 };
 
@@ -148,16 +150,32 @@ fn add_trait_bounds(mut generics: Generics) -> Generics {
     generics
 }
 
+fn has_skip_attr(field: &Field) -> bool {
+    field.attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+
+        let Ok(ident) = attr.parse_args::<Ident>() else {
+            return false;
+        };
+
+        ident == "skip" || ident == "skip_deserializing"
+    })
+}
+
 fn register_struct_field_types(data: &DataStruct) -> Result<TokenStream> {
     match data.fields {
         syn::Fields::Named(ref fields) => {
-            let field_fragments = fields.named.iter().map(|f| {
-                if let Type::Path(path) = &f.ty {
-                    let segments = to_turbofish(path);
-                    quote_spanned! {f.span() => #(#segments)*::register(registry)?;}
-                } else {
-                    quote! {}
+            let field_fragments = fields.named.iter().filter_map(|f| {
+                if has_skip_attr(f) {
+                    return None;
                 }
+                let Type::Path(path) = &f.ty else {
+                    return None;
+                };
+                let segments = to_turbofish(path);
+                Some(quote_spanned! {f.span() => #(#segments)*::register(registry)?;})
             });
 
             Ok(quote! {
@@ -174,14 +192,19 @@ fn struct_field_type_ids(data: &DataStruct) -> Vec<TokenStream> {
         syn::Fields::Named(ref fields) => fields
             .named
             .iter()
-            .map(|f| {
+            .filter_map(|f| {
+                if has_skip_attr(f) {
+                    return None;
+                }
                 let ty = &f.ty;
                 let name = f
                     .ident
                     .as_ref()
                     .map(|ident| ident.to_string())
                     .unwrap_or("".to_string());
-                quote_spanned! {f.span() => (#name.to_string(), std::any::TypeId::of::<#ty>())}
+                Some(
+                    quote_spanned! {f.span() => (#name.to_string(), std::any::TypeId::of::<#ty>())},
+                )
             })
             .collect(),
         syn::Fields::Unnamed(_) => todo!(),
