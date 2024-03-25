@@ -148,16 +148,7 @@ pub struct Header {
 }
 
 pub fn from_bytes<T: XnbType + DeserializeOwned>(i: &[u8]) -> Result<T> {
-    let (i, header) = parse_header(i).map_err(|e| anyhow!("Error parsing xnb header: {}", e))?;
-
-    // XNB files can be uncompressed or compressed with LZX or LZA.
-    // Currently only LZX and uncompressed files are supported.
-    let data = if header.flags.contains(Flags::COMPRESSED) {
-        let (_, data) = parse_lzx_data(i)?;
-        data
-    } else {
-        i.into()
-    };
+    let data = decompressed_data(i)?;
     trace!("decompressed payload:");
     trace!("{:?}", data.hex_dump());
 
@@ -202,6 +193,40 @@ pub fn from_bytes<T: XnbType + DeserializeOwned>(i: &[u8]) -> Result<T> {
 
     Ok(t)
 }
+
+pub fn decompressed_data(i: &[u8]) -> Result<Vec<u8>> {
+    let (i, header) = parse_header(i).map_err(|e| anyhow!("Error parsing xnb header: {}", e))?;
+
+    // XNB files can be uncompressed or compressed with LZX or LZA.
+    // Currently only LZX and uncompressed files are supported.
+    let data = if header.flags.contains(Flags::COMPRESSED) {
+        let (_, data) = parse_lzx_data(i)?;
+        data
+    } else {
+        i.into()
+    };
+
+    Ok(data)
+}
+
+pub fn reader_info(i: &[u8]) -> Result<(usize, Vec<TypeReaderSpec>)> {
+    let data = decompressed_data(i)?;
+    trace!("decompressed payload:");
+    trace!("{:?}", data.hex_dump());
+
+    // Parse and instantiate type readers.
+    let (data, reader_specs) =
+        parse_type_readers(&data).map_err(|e| anyhow!("Error decoding type readers: {}", e))?;
+
+    let (data, _) =
+        parse_7bit_int(data).map_err(|e| anyhow!("Error reading shared resource count: {}", e))?;
+
+    let (_data, root_reader_index) =
+        parse_7bit_int(data).map_err(|e| anyhow!("Error reading root reader index: {}", e))?;
+
+    Ok((root_reader_index as usize - 1, reader_specs))
+}
+
 fn parse_header(i: &[u8]) -> IResult<&[u8], Header> {
     let (i, _) = tag(b"XNB")(i)?;
     let (i, target) = map_res(u8, TargetPlatform::new)(i)?;
