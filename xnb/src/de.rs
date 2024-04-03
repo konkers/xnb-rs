@@ -2,11 +2,11 @@ use std::any::TypeId;
 use std::cmp::min;
 use std::fmt::Display;
 
-
 use log::trace;
 use nom::number::complete::{le_f32, le_f64, le_i32, le_u32, le_u8};
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, Visitor};
 
+use crate::xnb_type::FieldSpec;
 use crate::TypeReaderSpec;
 use crate::{parse_7bit_int, ParseError, TypeRegistry, TypeSpec};
 
@@ -66,6 +66,7 @@ pub struct Deserializer<'de> {
     registry: &'de TypeRegistry,
     reader_table: &'de Vec<TypeReaderSpec>,
     type_id: TypeId,
+    field_name: Option<String>,
 }
 
 impl<'de> Deserializer<'de> {
@@ -84,6 +85,7 @@ impl<'de> Deserializer<'de> {
             registry,
             reader_table,
             type_id,
+            field_name: None,
         }
     }
 
@@ -146,6 +148,15 @@ impl<'de> Deserializer<'de> {
     fn peek(&self, max_len: usize) -> &[u8] {
         let len = min(max_len, self.input.len());
         &self.input[..len]
+    }
+
+    fn get_first_type_for_id(&self, type_id: TypeId) -> Result<TypeSpec> {
+        self.registry
+            .get(type_id)?
+            .iter()
+            .next()
+            .cloned()
+            .ok_or_else(|| error!("type id {type_id:?} has empty spec set"))
     }
 
     pub fn read_and_validate_type(&mut self, type_id: TypeId) -> Result<TypeSpec> {
@@ -218,11 +229,39 @@ impl<'de> Deserializer<'de> {}
 impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     type Error = Error;
 
-    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        err!("deserialize_any not supported")
+        let spec = self
+            .registry
+            .get(self.type_id)
+            .expect("type spec to exist")
+            .iter()
+            .next()
+            .expect("type spec to exist");
+        trace!("deserailize any: {spec:?}");
+        match spec.any_type {
+            crate::AnyType::None => {
+                err!("Can't deserialize {} type as any", spec.name)
+            }
+            crate::AnyType::Bool => self.deserialize_bool(visitor),
+            crate::AnyType::I32 => self.deserialize_i32(visitor),
+            crate::AnyType::F32 => self.deserialize_f32(visitor),
+            crate::AnyType::F64 => self.deserialize_f64(visitor),
+            crate::AnyType::String => self.deserialize_string(visitor),
+            crate::AnyType::Option => self.deserialize_option(visitor),
+            crate::AnyType::List => self.deserialize_seq(visitor),
+            crate::AnyType::Dict => self.deserialize_map(visitor),
+            crate::AnyType::Enum => self.deserialize_enum("", &[], visitor),
+            crate::AnyType::Struct => {
+                let spec = self.read_and_validate_type(self.type_id)?;
+                let mut s = Struct::new(self, spec.fields.clone());
+                s.name = "b";
+                //visitor.visit_map(s)
+                visitor.visit_seq(s)
+            }
+        }
     }
 
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
@@ -395,7 +434,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         trace!("value spec: {value_spec:?}");
 
         // Process the null cases seperatly based on if the type is nullable.
-        if value_spec.nullable {
+        if value_spec.nullable && value_spec.tagged {
             // If the type is nullable, expect it to either be the reader_index 0 (null) or it's value.
             if self.input[0] == 0 {
                 // Consume the null type byte.
@@ -483,12 +522,17 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     {
         trace!("parsing map {:x?}", self.peek(64));
         let spec = self.read_and_validate_type(self.type_id)?;
+        if !spec.fields.is_empty() {
+            return visitor.visit_map(Struct::new(self, spec.fields));
+        }
+
         let key_type_id = spec.sub_types[0];
         let value_type_id = spec.sub_types[1];
         let num_entries = self.read_u32()? as usize;
 
         visitor.visit_map(Dict {
             de: self,
+
             num_entries,
             key_type_id,
             value_type_id,
@@ -513,11 +557,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         trace!("parsing struct {:x?}", self.peek(64));
         let spec = self.read_and_validate_type(self.type_id)?;
 
-        visitor.visit_seq(Struct {
-            de: self,
-            fields: spec.fields,
-            cur_entry: 0,
-        })
+        visitor.visit_seq(Struct::new(self, spec.fields))
     }
 
     fn deserialize_enum<V>(
@@ -540,6 +580,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        trace!("id");
+        if let Some(name) = &self.field_name {
+            trace!("field identifier {name}");
+            let name = name.clone();
+            self.field_name = None;
+            return visitor.visit_str(&name);
+        }
+
         let type_specs = self.registry.get(self.type_id)?;
         let spec = type_specs
             .iter()
@@ -638,10 +686,87 @@ impl<'de, 'a> MapAccess<'de> for Dict<'a, 'de> {
     }
 }
 
+struct StructState {
+    fields: Vec<FieldSpec>,
+    cur_entry: usize,
+}
+
+impl StructState {
+    fn new(fields: Vec<FieldSpec>) -> Self {
+        Self {
+            fields,
+            cur_entry: 0,
+        }
+    }
+
+    fn cur_field(&self) -> &FieldSpec {
+        &self.fields[self.cur_entry]
+    }
+
+    fn num_fields_remaining(&self) -> usize {
+        self.fields.len() - self.cur_entry
+    }
+
+    fn has_fields_remaining(&self) -> bool {
+        self.num_fields_remaining() != 0
+    }
+}
+
 struct Struct<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
-    fields: Vec<(String, TypeId)>,
-    cur_entry: usize,
+    state_stack: Vec<StructState>,
+    name: &'static str,
+}
+
+impl<'a, 'de: 'a> Struct<'a, 'de> {
+    fn new(de: &'a mut Deserializer<'de>, fields: Vec<FieldSpec>) -> Self {
+        Self {
+            de,
+            state_stack: vec![StructState::new(fields)],
+            name: "a",
+        }
+    }
+
+    fn state(&self) -> Option<&StructState> {
+        let state = self.state_stack.last().expect("state stack is never empty");
+        if state.has_fields_remaining() {
+            Some(state)
+        } else {
+            None
+        }
+    }
+
+    fn advance_field(&mut self) {
+        // Assert the precondition that we are not advancing beyond the known number of fields.
+        assert!(self
+            .state_stack
+            .last_mut()
+            .expect("state stack is never empty")
+            .has_fields_remaining());
+
+        loop {
+            let state = self
+                .state_stack
+                .last_mut()
+                .expect("state stack is never empty");
+
+            state.cur_entry += 1;
+
+            // If there are fields left in this state, we're good to go
+            if state.has_fields_remaining() {
+                return;
+            }
+
+            // We're at the bottom of the state stack so this must be the last field in the struct.
+            if self.state_stack.len() == 1 {
+                return;
+            }
+
+            trace!("end of depth {}", self.state_stack.len());
+            // Remove completed state from state stack.
+            self.state_stack.pop();
+        }
+    }
 }
 
 impl<'a, 'de: 'a> SeqAccess<'de> for Struct<'a, 'de> {
@@ -651,22 +776,85 @@ impl<'a, 'de: 'a> SeqAccess<'de> for Struct<'a, 'de> {
     where
         T: DeserializeSeed<'de>,
     {
-        if self.cur_entry >= self.fields.len() {
+        let Some(state) = self.state() else {
             return Ok(None);
-        }
-        self.de.type_id = self.fields[self.cur_entry].1;
+        };
+
+        let field = state.cur_field();
         trace!(
-            "deserializing field[{}] {}: {:x?}",
-            self.cur_entry,
-            self.fields[self.cur_entry].0,
+            "s{}: deserializing field[{}] {}: {:x?}",
+            self.name,
+            state.cur_entry,
+            field.name,
             self.de.peek(32),
         );
-        self.cur_entry += 1;
+        self.de.type_id = field.type_id;
+        self.advance_field();
         seed.deserialize(&mut *self.de).map(Some)
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.fields.len() - self.cur_entry)
+        match self.state() {
+            Some(state) => Some(state.num_fields_remaining()),
+            None => Some(0),
+        }
+    }
+}
+
+impl<'de, 'a> MapAccess<'de> for Struct<'a, 'de> {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        let Some(mut state) = self.state() else {
+            return Ok(None);
+        };
+
+        let mut field = state.cur_field();
+        while field.inline {
+            trace!("found inline field {}", field.name);
+            let sub_type = self.de.get_first_type_for_id(field.type_id)?;
+            self.state_stack
+                .push(StructState::new(sub_type.fields.clone()));
+            state = self.state().expect("state stack should never be empty");
+            field = state.cur_field();
+        }
+
+        //let state = self.state().expect("state stack should never be empty");
+        //let field = state.cur_field();
+        trace!(
+            "m{}: deserializing field[{}] {}: {:x?}",
+            self.name,
+            state.cur_entry,
+            field.name,
+            self.de.peek(32),
+        );
+        self.de.field_name = Some(field.name.clone());
+
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let state = self
+            .state()
+            .expect("should never be deserializing value with empty state stack");
+
+        let field = state.cur_field();
+
+        trace!(
+            "deserializing value[{}] {}: {:x?}",
+            state.cur_entry,
+            field.name,
+            self.de.peek(32),
+        );
+        self.de.type_id = field.type_id;
+        self.advance_field();
+        seed.deserialize(&mut *self.de)
     }
 }
 
@@ -683,6 +871,7 @@ impl<'a, 'de: 'a> SeqAccess<'de> for List<'a, 'de> {
     where
         T: DeserializeSeed<'de>,
     {
+        trace!("seq fields left {}", self.num_fields_left);
         if self.num_fields_left == 0 {
             return Ok(None);
         }

@@ -9,42 +9,78 @@ use indexmap::IndexMap;
 use crate::Result;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct FieldSpec {
+    pub name: String,
+    pub type_id: TypeId,
+    pub inline: bool,
+}
+
+//type AnyDeserializer<'de, V: Visitor<'de>> =
+// pub trait AnyDeserializer {
+//     fn deserialize_any<'de, V: Visitor<'de>>(
+//         &self,
+//         de: Deserializer<'de>,
+//         visitor: V,
+//         spec: &TypeSpec,
+//     ) -> Result<V::Value>;
+// }
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum AnyType {
+    None,
+    Bool,
+    I32,
+    F32,
+    F64,
+    String,
+    Option,
+    List,
+    Dict,
+    Struct,
+    Enum,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TypeSpec {
     pub name: String,
     pub sub_types: Vec<TypeId>,
-    pub fields: Vec<(String, TypeId)>,
+    pub fields: Vec<FieldSpec>,
+    // TODO: rationalize nullable and tagged:  Same thing?
     pub nullable: bool,
     pub tagged: bool,
+    pub any_type: AnyType,
 }
 
 impl TypeSpec {
-    pub fn new(name: &str) -> Self {
+    pub fn new(name: &str, any_type: AnyType) -> Self {
         Self {
             name: name.into(),
             sub_types: Vec::new(),
             fields: Vec::new(),
             nullable: true,
             tagged: true,
+            any_type,
         }
     }
 
-    pub fn new_primitive(name: &str) -> Self {
+    pub fn new_primitive(name: &str, any_type: AnyType) -> Self {
         Self {
             name: name.into(),
             sub_types: Vec::new(),
             fields: Vec::new(),
             nullable: false,
             tagged: false,
+            any_type,
         }
     }
 
-    pub fn new_with_subtypes(name: &str, sub_types: &[TypeId]) -> Self {
+    pub fn new_with_subtypes(name: &str, any_type: AnyType, sub_types: &[TypeId]) -> Self {
         Self {
             name: name.into(),
             sub_types: sub_types.into(),
             fields: Vec::new(),
             nullable: true,
             tagged: true,
+            any_type,
         }
     }
 
@@ -101,7 +137,10 @@ where
 impl XnbType for bool {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.BooleanReader"),
+            TypeSpec::new_primitive(
+                "Microsoft.Xna.Framework.Content.BooleanReader",
+                AnyType::Bool,
+            ),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -111,11 +150,11 @@ impl XnbType for bool {
 impl XnbType for i32 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new_primitive("System.Int32"),
+            TypeSpec::new_primitive("System.Int32", AnyType::I32),
             TypeId::of::<Self>(),
         )?;
         registry.register_type(
-            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.Int32Reader"),
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.Int32Reader", AnyType::I32),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -125,11 +164,11 @@ impl XnbType for i32 {
 impl XnbType for f32 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new_primitive("System.Single"),
+            TypeSpec::new_primitive("System.Single", AnyType::F32),
             TypeId::of::<Self>(),
         )?;
         registry.register_type(
-            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.SingleReader"),
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.SingleReader", AnyType::F32),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -139,7 +178,7 @@ impl XnbType for f32 {
 impl XnbType for f64 {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         registry.register_type(
-            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.DoubleReader"),
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.DoubleReader", AnyType::F64),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -148,9 +187,15 @@ impl XnbType for f64 {
 
 impl XnbType for String {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
-        registry.register_type(TypeSpec::new("System.String"), TypeId::of::<Self>())?;
         registry.register_type(
-            TypeSpec::new("Microsoft.Xna.Framework.Content.StringReader"),
+            TypeSpec::new("System.String", AnyType::String),
+            TypeId::of::<Self>(),
+        )?;
+        registry.register_type(
+            TypeSpec::new(
+                "Microsoft.Xna.Framework.Content.StringReader",
+                AnyType::String,
+            ),
             TypeId::of::<Self>(),
         )?;
         Ok(())
@@ -161,7 +206,11 @@ impl<T: 'static + XnbType> XnbType for Option<T> {
     fn register(registry: &mut TypeRegistry) -> Result<()> {
         <T as XnbType>::register(registry)?;
         registry.register_type(
-            TypeSpec::new_with_subtypes("placeholder::Option", &[TypeId::of::<T>()]),
+            TypeSpec::new_with_subtypes(
+                "placeholder::Option",
+                AnyType::Option,
+                &[TypeId::of::<T>()],
+            ),
             TypeId::of::<Self>(),
         )
     }
@@ -180,7 +229,10 @@ impl<T: 'static + XnbType> XnbType for Vec<T> {
         if let Ok(specs) = registry.get(sub_type_id).cloned() {
             for spec in specs {
                 if spec.sub_types.is_empty() {
-                    registry.register_type(TypeSpec::new(&format!("{}[]", spec.name)), type_id)?;
+                    registry.register_type(
+                        TypeSpec::new(&format!("{}[]", spec.name), AnyType::List),
+                        type_id,
+                    )?;
                 }
             }
         }
@@ -188,6 +240,7 @@ impl<T: 'static + XnbType> XnbType for Vec<T> {
         registry.register_type(
             TypeSpec::new_with_subtypes(
                 "Microsoft.Xna.Framework.Content.ListReader",
+                AnyType::List,
                 &[sub_type_id],
             ),
             type_id,
@@ -196,6 +249,7 @@ impl<T: 'static + XnbType> XnbType for Vec<T> {
         registry.register_type(
             TypeSpec::new_with_subtypes(
                 "Microsoft.Xna.Framework.Content.ArrayReader",
+                AnyType::List,
                 &[sub_type_id],
             ),
             type_id,
@@ -210,6 +264,7 @@ impl<K: 'static + XnbType, V: 'static + XnbType> XnbType for IndexMap<K, V> {
         registry.register_type(
             TypeSpec::new_with_subtypes(
                 "Microsoft.Xna.Framework.Content.DictionaryReader",
+                AnyType::Dict,
                 &[TypeId::of::<K>(), TypeId::of::<V>()],
             ),
             TypeId::of::<Self>(),

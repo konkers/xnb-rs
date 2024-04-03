@@ -1,5 +1,3 @@
-
-
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
 use syn::{
@@ -51,6 +49,12 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
         syn::Data::Union(_) => Vec::new(),
     };
 
+    let any_type = match &input.data {
+        syn::Data::Struct(_) => quote! {xnb::AnyType::Struct},
+        syn::Data::Enum(_) => quote! {xnb::AnyType::I32},
+        syn::Data::Union(_) => todo!(),
+    };
+
     let (xnb_name, nullable) = match type_registration {
         TypeRegistartion::NonNullable(name) => (name, false),
         TypeRegistartion::Nullable(name) => (name, true),
@@ -69,6 +73,7 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
                         fields: vec![#(#fields),*],
                         nullable: #nullable,
                         tagged: #tagged,
+                        any_type: #any_type,
                     },
                     std::any::TypeId::of::<Self>())?;
                 Ok(())
@@ -93,13 +98,13 @@ enum TypeRegistartion {
 
 fn get_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     match input.data {
-        syn::Data::Struct(_) => struct_type_registartion(input),
-        syn::Data::Enum(_) => struct_type_registration(input),
+        syn::Data::Struct(_) => struct_type_registration(input),
+        syn::Data::Enum(_) => enum_type_registration(input),
         syn::Data::Union(_) => todo!(),
     }
 }
 
-fn struct_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
+fn enum_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     let repr_attr = input.attrs.iter().find(|attr| attr.path().is_ident("repr"));
     let Some(repr_attr) = repr_attr else {
         return Ok(TypeRegistartion::Nullable(
@@ -119,7 +124,7 @@ fn struct_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     }
 }
 
-fn struct_type_registartion(input: &DeriveInput) -> Result<TypeRegistartion> {
+fn struct_type_registration(input: &DeriveInput) -> Result<TypeRegistartion> {
     let xnb_name = input
         .attrs
         .iter()
@@ -150,18 +155,26 @@ fn add_trait_bounds(mut generics: Generics) -> Generics {
     generics
 }
 
-fn has_skip_attr(field: &Field) -> bool {
+fn has_attr(field: &Field, name: &str, possible_values: &[&str]) -> bool {
     field.attrs.iter().any(|attr| {
-        if !attr.path().is_ident("serde") {
+        if !attr.path().is_ident(name) {
             return false;
         }
 
-        let Ok(ident) = attr.parse_args::<Ident>() else {
+        let Ok(arg) = attr.parse_args::<Ident>() else {
             return false;
         };
 
-        ident == "skip" || ident == "skip_deserializing"
+        let arg_value = arg.to_string();
+
+        possible_values
+            .iter()
+            .any(|possible| *possible == arg_value)
     })
+}
+
+fn has_skip_attr(field: &Field) -> bool {
+    has_attr(field, "serde", &["skip", "skip_deserializing"])
 }
 
 fn register_struct_field_types(data: &DataStruct) -> Result<TokenStream> {
@@ -202,9 +215,14 @@ fn struct_field_type_ids(data: &DataStruct) -> Vec<TokenStream> {
                     .as_ref()
                     .map(|ident| ident.to_string())
                     .unwrap_or("".to_string());
-                Some(
-                    quote_spanned! {f.span() => (#name.to_string(), std::any::TypeId::of::<#ty>())},
-                )
+                let inline = has_attr(f, "serde", &["flatten"]);
+                Some(quote_spanned! { f.span() =>
+                    xnb::FieldSpec{
+                        name: #name.to_string(),
+                        type_id: std::any::TypeId::of::<#ty>(),
+                        inline: #inline,
+                    }
+                })
             })
             .collect(),
         syn::Fields::Unnamed(_) => todo!(),
