@@ -25,7 +25,7 @@ mod xnb_type;
 
 //pub use value::Value;
 pub use xnb_macro::{xnb_name, xnb_untagged, XnbType};
-pub use xnb_type::{TypeRegistry, TypeSpec, XnbType};
+pub use xnb_type::{AnyType, FieldSpec, TypeRegistry, TypeSpec, XnbType};
 
 pub use anyhow::Error;
 
