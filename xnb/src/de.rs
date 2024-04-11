@@ -2,7 +2,7 @@ use std::any::TypeId;
 use std::cmp::min;
 use std::fmt::Display;
 
-use log::trace;
+use log::{debug, trace};
 use nom::number::complete::{le_f32, le_f64, le_i32, le_u32, le_u8};
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, Visitor};
 
@@ -67,6 +67,7 @@ pub struct Deserializer<'de> {
     reader_table: &'de Vec<TypeReaderSpec>,
     type_id: TypeId,
     field_name: Option<String>,
+    skip_next_tag: bool,
 }
 
 impl<'de> Deserializer<'de> {
@@ -86,6 +87,7 @@ impl<'de> Deserializer<'de> {
             reader_table,
             type_id,
             field_name: None,
+            skip_next_tag: false,
         }
     }
 
@@ -101,6 +103,13 @@ impl<'de> Deserializer<'de> {
             le_u8::<_, ParseError>(self.input).map_err(|e| error!("error reading bool: {e}"))?;
         self.input = data;
         Ok(val != 0)
+    }
+
+    pub fn read_u8(&mut self) -> Result<u8> {
+        let (data, val) =
+            le_u8::<_, ParseError>(self.input).map_err(|e| error!("error reading bool: {e}"))?;
+        self.input = data;
+        Ok(val)
     }
 
     pub fn read_u32(&mut self) -> Result<u32> {
@@ -171,6 +180,11 @@ impl<'de> Deserializer<'de> {
             return Ok(spec.clone());
         }
 
+        if self.skip_next_tag {
+            self.skip_next_tag = false;
+            return Ok(spec.clone());
+        }
+
         let reader_index = self.read_varint()?;
         if reader_index == 0 {
             return err!("encountered null type index on non-nullable type (consider wrapping in `Option<T>`).");
@@ -229,6 +243,12 @@ impl<'de> Deserializer<'de> {
     }
 }
 
+impl<'de> Drop for Deserializer<'de> {
+    fn drop(&mut self) {
+        debug!("Decoding done with {} bytes of data left", self.input.len());
+    }
+}
+
 impl<'de> Deserializer<'de> {}
 
 impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
@@ -251,6 +271,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 err!("Can't deserialize {} type as any", spec.name)
             }
             crate::AnyType::Bool => self.deserialize_bool(visitor),
+            crate::AnyType::U8 => self.deserialize_u8(visitor),
             crate::AnyType::I32 => self.deserialize_i32(visitor),
             crate::AnyType::F32 => self.deserialize_f32(visitor),
             crate::AnyType::F64 => self.deserialize_f64(visitor),
@@ -310,11 +331,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         err!("deserialize_i64 not supported")
     }
 
-    fn deserialize_u8<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        err!("deserialize_u8 not supported")
+        trace!("parsing u8 {:x?}", self.peek(1));
+        let val = self.read_u8()?;
+        trace!("   -> {val}");
+        visitor.visit_u8(val)
     }
 
     fn deserialize_u16<V>(self, _visitor: V) -> Result<V::Value>
@@ -489,7 +513,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let type_spec = self.read_and_validate_type(self.type_id)?;
         let num_entries = self.read_u32()?;
 
-        assert!(type_spec.sub_types.len() == 1);
+        assert!(
+            type_spec.sub_types.len() == 1,
+            "type spec does not contain a subtype: {type_spec:?}"
+        );
 
         visitor.visit_seq(List {
             de: self,
@@ -561,6 +588,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     {
         trace!("parsing struct {:x?}", self.peek(64));
         let spec = self.read_and_validate_type(self.type_id)?;
+        trace!("  spec: {spec:x?}");
 
         visitor.visit_seq(Struct::new(self, spec.fields))
     }
@@ -691,6 +719,7 @@ impl<'de, 'a> MapAccess<'de> for Dict<'a, 'de> {
     }
 }
 
+#[derive(Clone, Debug)]
 struct StructState {
     fields: Vec<FieldSpec>,
     cur_entry: usize,
@@ -793,7 +822,13 @@ impl<'a, 'de: 'a> SeqAccess<'de> for Struct<'a, 'de> {
             field.name,
             self.de.peek(32),
         );
-        self.de.type_id = field.type_id;
+
+        // local copies of these to drop borrow of &self through field.
+        let untagged = field.untagged;
+        let type_id = field.type_id;
+
+        self.de.skip_next_tag = untagged;
+        self.de.type_id = type_id;
         self.advance_field();
         seed.deserialize(&mut *self.de).map(Some)
     }
@@ -857,7 +892,13 @@ impl<'de, 'a> MapAccess<'de> for Struct<'a, 'de> {
             field.name,
             self.de.peek(32),
         );
-        self.de.type_id = field.type_id;
+
+        // local copies of these to drop borrow of &self through field.
+        let untagged = field.untagged;
+        let type_id = field.type_id;
+
+        self.de.skip_next_tag = untagged;
+        self.de.type_id = type_id;
         self.advance_field();
         seed.deserialize(&mut *self.de)
     }

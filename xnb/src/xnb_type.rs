@@ -13,12 +13,14 @@ pub struct FieldSpec {
     pub name: String,
     pub type_id: TypeId,
     pub inline: bool,
+    pub untagged: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum AnyType {
     None,
     Bool,
+    U8,
     I32,
     F32,
     F64,
@@ -132,6 +134,20 @@ impl XnbType for bool {
                 "Microsoft.Xna.Framework.Content.BooleanReader",
                 AnyType::Bool,
             ),
+            TypeId::of::<Self>(),
+        )?;
+        Ok(())
+    }
+}
+
+impl XnbType for u8 {
+    fn register(registry: &mut TypeRegistry) -> Result<()> {
+        registry.register_type(
+            TypeSpec::new_primitive("System.Byte", AnyType::U8),
+            TypeId::of::<Self>(),
+        )?;
+        registry.register_type(
+            TypeSpec::new_primitive("Microsoft.Xna.Framework.Content.ByteReader", AnyType::U8),
             TypeId::of::<Self>(),
         )?;
         Ok(())

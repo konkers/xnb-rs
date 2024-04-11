@@ -208,11 +208,13 @@ fn struct_field_type_ids(data: &DataStruct) -> Vec<TokenStream> {
                     .map(|ident| ident.to_string())
                     .unwrap_or("".to_string());
                 let inline = has_attr(&f.attrs, "serde", &["flatten"]);
+                let untagged = has_attr(&f.attrs, "xnb", &["untagged"]);
                 Some(quote_spanned! { f.span() =>
                     xnb::FieldSpec{
                         name: #name.to_string(),
                         type_id: std::any::TypeId::of::<#ty>(),
                         inline: #inline,
+                        untagged: #untagged,
                     }
                 })
             })
@@ -241,7 +243,7 @@ fn to_turbofish(path: &TypePath) -> Vec<TokenStream> {
         })
 }
 
-#[proc_macro_derive(XnbType)]
+#[proc_macro_derive(XnbType, attributes(xnb))]
 pub fn xnb_type_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse the input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
@@ -255,14 +257,6 @@ pub fn xnb_type_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 
 #[proc_macro_attribute]
 pub fn xnb_name(
-    _attr: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn xnb_untagged(
     _attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {

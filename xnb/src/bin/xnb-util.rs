@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
+use image::RgbaImage;
 use pretty_hex::PrettyHex;
 use std::path::PathBuf;
 use structopt::StructOpt;
+use xnb::xna::Texture2D;
 
 #[derive(Debug, StructOpt)]
 enum Opt {
@@ -10,6 +12,13 @@ enum Opt {
         file: PathBuf,
     },
     ListReaders {
+        #[structopt(parse(from_os_str))]
+        file: PathBuf,
+    },
+    Texture {
+        #[structopt(long, parse(from_os_str))]
+        output: PathBuf,
+
         #[structopt(parse(from_os_str))]
         file: PathBuf,
     },
@@ -38,6 +47,16 @@ fn cmd_list_readers(file: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn cmd_texture(output: &PathBuf, file: &PathBuf) -> Result<()> {
+    let data = std::fs::read(file)?;
+    let texture: Texture2D = xnb::from_bytes(&data)?;
+    let image: RgbaImage = texture.try_into()?;
+
+    image.save(output)?;
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     env_logger::init();
 
@@ -46,6 +65,7 @@ fn main() -> Result<()> {
     match opt {
         Opt::Dump { file } => cmd_dump(&file)?,
         Opt::ListReaders { file } => cmd_list_readers(&file)?,
+        Opt::Texture { output, file } => cmd_texture(&output, &file)?,
     }
 
     Ok(())

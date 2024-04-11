@@ -23,8 +23,10 @@ mod de;
 //pub mod value;
 mod xnb_type;
 
+pub mod xna;
+
 //pub use value::Value;
-pub use xnb_macro::{xnb_name, xnb_untagged, XnbType};
+pub use xnb_macro::{xnb_name, XnbType};
 pub use xnb_type::{AnyType, FieldSpec, TypeRegistry, TypeSpec, XnbType};
 
 pub use anyhow::Error;
@@ -305,7 +307,7 @@ fn parse_type_reader(i: &[u8]) -> IResult<&[u8], TypeReaderSpec> {
 }
 
 fn parse_type(i: &str) -> nom::IResult<&str, (String, Vec<String>)> {
-    let (i, name) = is_not("`")(i)?;
+    let (i, name) = is_not("`,")(i)?;
     let (i, subtypes) = opt(parse_subtypes)(i)?;
 
     Ok((i, (name.to_string(), subtypes.unwrap_or_default())))
