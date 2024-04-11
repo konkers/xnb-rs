@@ -221,7 +221,11 @@ impl<T: 'static + XnbType> XnbType for Vec<T> {
             for spec in specs {
                 if spec.sub_types.is_empty() {
                     registry.register_type(
-                        TypeSpec::new(&format!("{}[]", spec.name), AnyType::List),
+                        TypeSpec::new_with_subtypes(
+                            &format!("{}[]", spec.name),
+                            AnyType::List,
+                            &[sub_type_id],
+                        ),
                         type_id,
                     )?;
                 }

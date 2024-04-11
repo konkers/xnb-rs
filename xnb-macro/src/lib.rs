@@ -1,8 +1,8 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
 use syn::{
-    parse_macro_input, parse_quote, spanned::Spanned, DataStruct, DeriveInput, Field, GenericParam,
-    Generics, Ident, LitStr, PathArguments, Type, TypePath,
+    parse_macro_input, parse_quote, spanned::Spanned, Attribute, DataStruct, DeriveInput, Field,
+    GenericParam, Generics, Ident, LitStr, PathArguments, Type, TypePath,
 };
 
 struct Error {
@@ -32,7 +32,6 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
     let name = &input.ident;
 
     let type_registration = get_type_registration(&input)?;
-    let tagged = is_tagged(&input);
     // Add a bound `T: HeapSize` to every type parameter T.
     let generics = add_trait_bounds(input.generics);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -60,6 +59,8 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
         TypeRegistartion::Nullable(name) => (name, true),
     };
 
+    let tagged = !has_attr(&input.attrs, "xnb", &["untagged"]);
+
     // Build the output, possibly using quasi-quotation
     Ok(quote! {
         impl #impl_generics xnb::XnbType for #name #ty_generics #where_clause {
@@ -80,15 +81,6 @@ fn xnb_type_macro_impl(input: DeriveInput) -> Result<TokenStream> {
             }
         }
     })
-}
-
-fn is_tagged(input: &DeriveInput) -> bool {
-    let tag_found = input
-        .attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("xnb_untagged"));
-
-    !tag_found
 }
 
 enum TypeRegistartion {
@@ -155,8 +147,8 @@ fn add_trait_bounds(mut generics: Generics) -> Generics {
     generics
 }
 
-fn has_attr(field: &Field, name: &str, possible_values: &[&str]) -> bool {
-    field.attrs.iter().any(|attr| {
+fn has_attr(attrs: &[Attribute], name: &str, possible_values: &[&str]) -> bool {
+    attrs.iter().any(|attr| {
         if !attr.path().is_ident(name) {
             return false;
         }
@@ -174,7 +166,7 @@ fn has_attr(field: &Field, name: &str, possible_values: &[&str]) -> bool {
 }
 
 fn has_skip_attr(field: &Field) -> bool {
-    has_attr(field, "serde", &["skip", "skip_deserializing"])
+    has_attr(&field.attrs, "serde", &["skip", "skip_deserializing"])
 }
 
 fn register_struct_field_types(data: &DataStruct) -> Result<TokenStream> {
@@ -215,7 +207,7 @@ fn struct_field_type_ids(data: &DataStruct) -> Vec<TokenStream> {
                     .as_ref()
                     .map(|ident| ident.to_string())
                     .unwrap_or("".to_string());
-                let inline = has_attr(f, "serde", &["flatten"]);
+                let inline = has_attr(&f.attrs, "serde", &["flatten"]);
                 Some(quote_spanned! { f.span() =>
                     xnb::FieldSpec{
                         name: #name.to_string(),

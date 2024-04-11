@@ -211,7 +211,12 @@ impl<'de> Deserializer<'de> {
                         trace!("{specs:?}");
                         acc && specs
                             .iter()
-                            .any(|spec| spec.name == *name && spec.sub_types.is_empty())
+                            .any(|spec| spec.name == *name
+                                && (
+                                    // Special case for array subtypes which implicitly have
+                                    // thier own subtype.
+                                    (spec.name.ends_with("[]") && spec.sub_types.len() == 1)
+                                    || spec.sub_types.is_empty()))
                     })
             })
             .cloned()
