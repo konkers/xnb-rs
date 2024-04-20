@@ -64,11 +64,7 @@ impl TryFrom<Texture2D> for image::RgbaImage {
             texture.data.len()
         );
 
-        image::ImageBuffer::from_raw(
-            texture.width as u32,
-            texture.height as u32,
-            texture.data.clone(),
-        )
-        .ok_or_else(|| anyhow::anyhow!("can't convert texture to RGBA image"))
+        image::ImageBuffer::from_raw(texture.width as u32, texture.height as u32, texture.data)
+            .ok_or_else(|| anyhow::anyhow!("can't convert texture to RGBA image"))
     }
 }
