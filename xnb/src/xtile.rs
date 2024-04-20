@@ -1,4 +1,3 @@
-use super::{TypeReader, Value};
 use anyhow::{anyhow, Result};
 use log::debug;
 use nom::{
@@ -9,7 +8,7 @@ use nom::{
     number::complete::{le_f32, le_i32, le_u32, u8},
 };
 
-use crate::{IResult, ReaderContext};
+use crate::IResult;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Size {
@@ -24,6 +23,14 @@ impl Size {
 
         Ok((i, Size { w, h }))
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Bool(bool),
+    I32(i32),
+    F32(f32),
+    String(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,30 +325,8 @@ pub struct Map {
     pub layers: Vec<Layer>,
 }
 
-impl Map {}
-
-pub(super) struct MapReader {}
-
-impl MapReader {
-    pub fn new() -> MapReader {
-        MapReader {}
-    }
-
-    fn parse_tile_sheets(i: &[u8]) -> IResult<&[u8], Vec<TileSheet>> {
-        let (i, sheet_count) = le_u32(i)?;
-        let (i, sheets) = count(TileSheet::parse, sheet_count as usize)(i)?;
-        Ok((i, sheets))
-    }
-
-    fn parse_layers(i: &[u8]) -> IResult<&[u8], Vec<Layer>> {
-        let (i, layer_count) = le_u32(i)?;
-        let (i, layers) = count(Layer::parse, layer_count as usize)(i)?;
-        Ok((i, layers))
-    }
-}
-
-impl TypeReader for MapReader {
-    fn parse<'a>(&self, _context: &ReaderContext, i: &'a [u8]) -> IResult<&'a [u8], Value> {
+impl Map {
+    pub(super) fn parse<'a>(i: &'a [u8]) -> IResult<&'a [u8], Self> {
         let (i, _len) = le_u32(i)?;
         let (i, _) = tag("tBIN10")(i)?;
         let (i, id) = parse_string(i)?;
@@ -357,18 +342,26 @@ impl TypeReader for MapReader {
 
         Ok((
             i,
-            Value::Map(Map {
+            Map {
                 id,
                 description,
                 properties,
                 tile_sheets,
                 layers,
-            }),
+            },
         ))
     }
 
-    fn is_basic(&self) -> bool {
-        false
+    fn parse_tile_sheets(i: &[u8]) -> IResult<&[u8], Vec<TileSheet>> {
+        let (i, sheet_count) = le_u32(i)?;
+        let (i, sheets) = count(TileSheet::parse, sheet_count as usize)(i)?;
+        Ok((i, sheets))
+    }
+
+    fn parse_layers(i: &[u8]) -> IResult<&[u8], Vec<Layer>> {
+        let (i, layer_count) = le_u32(i)?;
+        let (i, layers) = count(Layer::parse, layer_count as usize)(i)?;
+        Ok((i, layers))
     }
 }
 

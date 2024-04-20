@@ -16,14 +16,15 @@ use nom::{
 use pretty_hex::*;
 use serde::de::DeserializeOwned;
 use std::{cmp::min, io::Write};
+use xtile::Map;
 
 pub use anyhow::Result;
 
 mod de;
-//pub mod value;
 mod xnb_type;
 
 pub mod xna;
+pub mod xtile;
 
 //pub use value::Value;
 pub use xnb_macro::{xnb_name, XnbType};
@@ -194,6 +195,44 @@ pub fn from_bytes<T: XnbType + DeserializeOwned>(i: &[u8]) -> Result<T> {
     // Shared resources are not handled at the moment.
 
     Ok(t)
+}
+
+pub fn map_from_bytes(i: &[u8]) -> Result<Map> {
+    let data = decompressed_data(i)?;
+    trace!("decompressed payload:");
+    trace!("{:?}", data.hex_dump());
+
+    // Parse and instantiate type readers.
+    let (data, reader_specs) =
+        parse_type_readers(&data).map_err(|e| anyhow!("Error decoding type readers: {}", e))?;
+
+    if log_enabled!(Level::Debug) {
+        for (i, spec) in reader_specs.iter().enumerate() {
+            debug!("{i}: reader: {:?}", spec);
+        }
+    }
+
+    if reader_specs.len() != 1 || reader_specs[0].name.as_str() != "xTile.Pipeline.TideReader" {
+        return Err(anyhow!(
+            "XNB data does not contain a singular xTile.Pipeline.TideReader reader"
+        ));
+    }
+
+    let (data, _) =
+        parse_7bit_int(data).map_err(|e| anyhow!("Error reading shared resource count: {}", e))?;
+
+    let (data, reader_index) =
+        parse_7bit_int(data).map_err(|e| anyhow!("Error reading shared resource count: {}", e))?;
+
+    if reader_index != 1 {
+        return Err(anyhow!(
+            "reader index of xTile.Pipeline.TideReader data should be 1"
+        ));
+    }
+
+    let (_data, map) = Map::parse(data)?;
+
+    Ok(map)
 }
 
 pub fn decompressed_data(i: &[u8]) -> Result<Vec<u8>> {
@@ -407,6 +446,17 @@ mod tests {
         let fish: IndexMap<i32, String> =
             from_bytes(&data).map_err(|e| anyhow!("Error parsing xnb: {}", e))?;
         println!("{fish:#?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_read() -> Result<()> {
+        init();
+
+        let data = std::fs::read("Mountain.xnb")?;
+        let map = map_from_bytes(&data)?;
+        println!("{map:#?}");
 
         Ok(())
     }
