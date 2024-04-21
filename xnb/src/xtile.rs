@@ -1,5 +1,6 @@
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Result};
-use log::debug;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take},
@@ -87,6 +88,7 @@ pub struct TileSheet {
     pub margin: Size,
     pub spacing: Size,
     pub props: Vec<Property>,
+    tile_properties: HashMap<i32, HashMap<String, Value>>,
 }
 
 impl TileSheet {
@@ -99,6 +101,24 @@ impl TileSheet {
         let (i, margin) = Size::parse(i)?;
         let (i, spacing) = Size::parse(i)?;
         let (i, props) = Property::parse_properties(i)?;
+
+        let mut tile_properties: HashMap<i32, HashMap<String, Value>> = HashMap::new();
+        for prop in &props {
+            let parts: Vec<_> = prop.key.split('@').collect();
+            if parts.len() != 4 || parts[1] != "TileIndex" {
+                continue;
+            }
+
+            let Ok(index) = parts[2].parse::<i32>() else {
+                continue;
+            };
+
+            tile_properties
+                .entry(index)
+                .or_default()
+                .insert(parts[3].to_string(), prop.val.clone());
+        }
+
         Ok((
             i,
             TileSheet {
@@ -110,8 +130,14 @@ impl TileSheet {
                 margin,
                 spacing,
                 props,
+                tile_properties,
             },
         ))
+    }
+
+    pub fn get_tile_property<'a>(&'a self, index: i32, name: &str) -> Option<&'a Value> {
+        let props = self.tile_properties.get(&index)?;
+        props.get(name)
     }
 }
 
@@ -136,6 +162,28 @@ pub enum Tile {
     Null,
     Static(StaticTile),
     Animated(AnimatedTile),
+}
+
+impl Tile {
+    pub fn get_property<'a>(&'a self, name: &str) -> Option<&'a Value> {
+        let properties = match self {
+            Tile::Static(tile) => &tile.properties,
+            Tile::Animated(tile) => &tile.properties,
+            Tile::Null => return None,
+        };
+        properties
+            .iter()
+            .find(|prop| prop.key == name)
+            .map(|prop| &prop.val)
+    }
+
+    pub fn sheet_and_index(&self) -> Option<(i32, &str)> {
+        match self {
+            Tile::Static(tile) => Some((tile.index, &tile.tile_sheet)),
+            Tile::Animated(tile) => Some((tile.frames[0].index, &tile.frames[0].tile_sheet)),
+            Tile::Null => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -314,6 +362,11 @@ impl Layer {
             },
         ))
     }
+
+    pub fn get_tile(&self, x: i32, y: i32) -> Option<&Tile> {
+        let index = y * self.size.w + x;
+        self.tiles.get(index as usize)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,19 +379,14 @@ pub struct Map {
 }
 
 impl Map {
-    pub(super) fn parse<'a>(i: &'a [u8]) -> IResult<&'a [u8], Self> {
+    pub(super) fn parse(i: &[u8]) -> IResult<&[u8], Self> {
         let (i, _len) = le_u32(i)?;
         let (i, _) = tag("tBIN10")(i)?;
         let (i, id) = parse_string(i)?;
-        debug!("id: {}", &id);
         let (i, description) = parse_string(i)?;
-        debug!("desc: {}", &description);
         let (i, properties) = Property::parse_properties(i)?;
-        debug!("props: {:#?}", &properties);
         let (i, tile_sheets) = Self::parse_tile_sheets(i)?;
-        debug!("sheets: {:#?}", &tile_sheets);
         let (i, layers) = Self::parse_layers(i)?;
-        debug!("layers: {:#?}", &layers);
 
         Ok((
             i,
@@ -362,6 +410,29 @@ impl Map {
         let (i, layer_count) = le_u32(i)?;
         let (i, layers) = count(Layer::parse, layer_count as usize)(i)?;
         Ok((i, layers))
+    }
+
+    pub fn get_layer<'a>(&'a self, id: &str) -> Option<&'a Layer> {
+        self.layers.iter().find(|x| x.id == id)
+    }
+
+    pub fn get_tile_property<'a>(
+        &'a self,
+        x: i32,
+        y: i32,
+        property_name: &str,
+        layer_name: &str,
+    ) -> Option<&'a Value> {
+        // Ignores builds and furniture.
+        let layer = self.get_layer(layer_name)?;
+        let tile = layer.get_tile(x, y)?;
+        if let Some(value) = tile.get_property(property_name) {
+            return Some(value);
+        }
+
+        let (index, sheet_id) = tile.sheet_and_index()?;
+        let sheet = self.tile_sheets.iter().find(|sheet| sheet.id == sheet_id)?;
+        sheet.get_tile_property(index, property_name)
     }
 }
 
